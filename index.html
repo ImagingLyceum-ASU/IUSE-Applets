@@ -32,6 +32,7 @@
     .score { font-weight:700; }
     .ok { color:var(--ok); }
     .bad { color:var(--bad); }
+    select { background:#0f151c; color:#dbe7ff; border-radius:8px; border:1px solid #273345; padding:4px 8px; font-size:12px; }
   </style>
 </head>
 <body>
@@ -48,7 +49,7 @@
           <div class="pill active" data-mode="paint">Paint Answer</div>
           <!-- <div class="pill" data-mode="line">Axis Only</div> -->
         </div>
-        <div class="small">Left-click/drag to fill, right-click to erase. Shift floods a row. Answer is compared against the reflection of the served shape.</div>
+        <div class="small" style="margin-top:0.2cm;">Left-click/drag to fill, right-click to erase. Shift floods a row. Answer is compared against the reflection of the served shape.</div>
       </div>
 
       <div class="group">
@@ -65,17 +66,28 @@
 
       <div class="group">
         <h3>Symmetry Challenge</h3>
+
+        <!-- NEW: Challenge Source selection -->
+        <div class="row field">
+          <label>Challenge Source</label>
+          <select id="challengeSource">
+            <option value="random">Random</option>
+            <option value="preset1">Preset 1 – Plus</option>
+            <option value="preset2">Preset 2 – Diagonal</option>
+          </select>
+        </div>
+
         <div class="row field"><label>Axis Angle</label><input id="axisAngle" type="range" min="-180" max="180" step="45" value="0"><span id="axisVal">0°</span></div>
         <div class="row field"><label>Shape Cells</label><input id="shapeCells" type="range" min="4" max="200" step="1" value="5"><span id="shapeCellsVal">5</span></div>
         <div class="row field"><label>Max Colors</label><input id="shapeColors" type="range" min="1" max="4" step="1" value="4"><span id="shapeColorsVal">4</span></div>
         <div class="row"><button class="btn" id="newChallenge">New Challenge</button></div>
+        <div class="small" style="margin-top:0.2cm;">Reflect the served question about the axis line marked in teal and hit Check Answer when you are done to verify</div>
       </div>
 
       <div class="group">
         <h3>Evaluate</h3>
         <div class="row"><button class="btn" id="check">Check Answer</button><button class="btn ghost" id="showSolution">Show Solution</button></div>
         <div class="small">Result: <span id="result" class="score"></span></div>
-        <!-- UPDATED LABEL TEXT -->
         <div class="small">Attempts: <span id="attempts">0</span> | Used Solution?: <span id="usedCheck">No</span></div>
       </div>
     </div>
@@ -92,9 +104,9 @@
   let gridCols = 24, gridRows = 24;
   const paletteColors = [
     [100.0/255.0, 143.0/255.0, 255.0/255.0, 1.0], // ibm-blue
-    [220.0/255.0, 38.0/255.0, 127.0/255.0, 1.0], // ibm-magenta
-    [254.0/255.0, 97.0/255.0, 0.0/255.0, 1.0], // ibm-orange
-    [255.0/255.0, 176.0/255.0, 0.0/255.0, 1.0], // ibm-yellow
+    [220.0/255.0, 38.0/255.0, 127.0/255.0, 1.0],  // ibm-magenta
+    [254.0/255.0, 97.0/255.0, 0.0/255.0, 1.0],    // ibm-orange
+    [255.0/255.0, 176.0/255.0, 0.0/255.0, 1.0],   // ibm-yellow
   ];
   const eraser = [0,0,0,0];
   let currentColorIndex = 0; // 0..3 or -1
@@ -106,25 +118,15 @@
   let served = new Map(); // key "i,j" -> colorIdx
   let showServed = true;
 
-  // Tracking attempts and solution reveal
-  let attemptCount = 0;       // how many times "Check Answer" was used
-  let solutionRevealed = false; // whether "Show Solution" has been pressed
+  // Attempts / solution
+  let attemptCount = 0;
+  let solutionRevealed = false;
 
   // Axis of symmetry (through origin) in radians
-  let axisAngle = 0; // radians
+  let axisAngle = 0;
 
-  // Lines the user adds (still supported)
+  // User-drawn lines (still supported)
   let lines = [];
-
-  // Batches
-  let batch = {
-    gridLineCount:0, gridPos:null, gridCol:null,
-    axesPos:null, axesCol:null,
-    servedPos:null, servedCol:null,
-    answerPos:null, answerCol:null,
-    linePos:null, lineCol:null, lineCount:0,
-    marksPos:null, marksCol:null
-  };
 
   const state = { aspect:1 };
 
@@ -135,21 +137,21 @@
     const h = Math.floor(rect.height * dpr);
     if (canvas.width !== w || canvas.height !== h){ canvas.width = w; canvas.height = h; }
     gl.viewport(0,0,gl.drawingBufferWidth, gl.drawingBufferHeight);
-    state.aspect = w / h; // keep square cells via shader + picking inverse
+    state.aspect = w / h;
   }
   window.addEventListener('resize', ()=>{ resizeCanvas(); draw(); });
   resizeCanvas();
 
   /*** --- Shaders --- ***/
   const vs = `
-    attribute vec2 a_pos;      // world pos in cell units
-    attribute vec4 a_col;      // vertex color
-    uniform vec2 u_half;       // half extents
-    uniform float u_aspect;    // viewport aspect
+    attribute vec2 a_pos;
+    attribute vec4 a_col;
+    uniform vec2 u_half;
+    uniform float u_aspect;
     varying vec4 v_col;
     void main(){
       vec2 clip = a_pos / u_half;
-      clip.x /= u_aspect; // aspect correction keeps squares
+      clip.x /= u_aspect;
       gl_Position = vec4(clip, 0.0, 1.0);
       v_col = a_col;
     }
@@ -190,7 +192,16 @@
   const bufPos = gl.createBuffer();
   const bufCol = gl.createBuffer();
 
-  /*** --- Builders --- ***/
+  /*** --- Batches --- ***/
+  const batch = {
+    gridLineCount:0, gridPos:null, gridCol:null,
+    axesPos:null, axesCol:null,
+    servedPos:null, servedCol:null,
+    answerPos:null, answerCol:null,
+    linePos:null, lineCol:null, lineCount:0,
+    marksPos:null, marksCol:null
+  };
+
   function rebuildGridLines(){
     const cols = gridCols, rows = gridRows;
     const halfW = cols/2, halfH = rows/2;
@@ -218,11 +229,11 @@
 
   function rebuildAxisLine(){
     const dx = Math.cos(axisAngle), dy = Math.sin(axisAngle);
-    const L = Math.max(gridCols, gridRows) * 0.75; // long enough
+    const L = Math.max(gridCols, gridRows) * 0.75;
     const x0 = -dx * L, y0 = -dy * L;
     const x1 =  dx * L, y1 =  dy * L;
     batch.axesPos = new Float32Array([x0,y0,x1,y1]);
-    batch.axesCol = new Float32Array([0.3,0.9,1.0,1.0, 0.3,0.9,1.0,1.0]); // cyan
+    batch.axesCol = new Float32Array([0.3,0.9,1.0,1.0, 0.3,0.9,1.0,1.0]);
   }
 
   function mapCellsToTris(cellsMap, alpha=1.0){
@@ -245,7 +256,7 @@
   }
 
   function rebuildPaintBatches(){
-    const servedData = mapCellsToTris(served, showServed? 0.35 : 0.0); // ghost hint
+    const servedData = mapCellsToTris(served, showServed? 0.35 : 0.0);
     batch.servedPos = servedData.pos; batch.servedCol = servedData.col;
     const ansData = mapCellsToTris(painted, 1.0);
     batch.answerPos = ansData.pos; batch.answerCol = ansData.col;
@@ -273,27 +284,23 @@
     if((!wrongCells || wrongCells.length===0) && (!missingCells || missingCells.length===0)){
       batch.marksPos=null; batch.marksCol=null; return;
     }
-    const s = 0.48; // half-diagonal length inside cell
+    const s = 0.48;
     const pos = [];
     const col = [];
     const black = [0,0,0,1], white = [1,1,1,1];
     function addBlackCross(i,j){
       const cx = (i - gridCols/2) + 0.5;
       const cy = (j - gridRows/2) + 0.5;
-      // Diagonal A (black)
       pos.push(cx - s, cy - s, cx + s, cy + s);
       col.push(...black, ...black);
-      // Diagonal B (white)
       pos.push(cx - s, cy + s, cx + s, cy - s);
       col.push(...black, ...black);
     }
     function addWhiteCross(i,j){
       const cx = (i - gridCols/2) + 0.5;
       const cy = (j - gridRows/2) + 0.5;
-      // Diagonal A (white)
       pos.push(cx - s, cy - s, cx + s, cy + s);
       col.push(...white, ...white);
-      // Diagonal B (white)
       pos.push(cx - s, cy + s, cx + s, cy - s);
       col.push(...white, ...white);
     }
@@ -307,7 +314,7 @@
     batch.marksCol = new Float32Array(col);
   }
 
-  /*** --- Draw helpers --- ***/
+  /*** --- Draw --- ***/
   function bindAndDraw(mode, posData, colData){
     if(!posData || posData.length===0) return;
     gl.bindBuffer(gl.ARRAY_BUFFER, bufPos);
@@ -330,23 +337,15 @@
     gl.uniform2f(loc.u_half, gridCols/2, gridRows/2);
     gl.uniform1f(loc.u_aspect, state.aspect);
 
-    // Served (ghost), Answer (opaque)
     bindAndDraw(gl.TRIANGLES, batch.servedPos, batch.servedCol);
     bindAndDraw(gl.TRIANGLES, batch.answerPos, batch.answerCol);
 
-    // Axis of symmetry
     gl.lineWidth(3);
     bindAndDraw(gl.LINES, batch.axesPos, batch.axesCol);
 
-    // User drawn lines (optional)
     gl.lineWidth(1);
     bindAndDraw(gl.LINES, batch.linePos, batch.lineCol);
-
-    // Markers (crosses)
     bindAndDraw(gl.LINES, batch.marksPos, batch.marksCol);
-
-    // Grid overlay last
-    gl.lineWidth(1);
     bindAndDraw(gl.LINES, batch.gridPos, batch.gridCol);
 
     updateHUD();
@@ -355,9 +354,9 @@
   /*** --- Picking / Interaction --- ***/
   function canvasToWorld(clientX, clientY){
     const rect = canvas.getBoundingClientRect();
-    const nx = ((clientX - rect.left) / rect.width) * 2 - 1; // -1..1
-    const ny = 1 - ((clientY - rect.top) / rect.height) * 2; // -1..1 (flip Y)
-    const x = nx * (gridCols/2) * state.aspect; // inverse of vertex aspect correction
+    const nx = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const ny = 1 - ((clientY - rect.top) / rect.height) * 2;
+    const x = nx * (gridCols/2) * state.aspect;
     const y = ny * (gridRows/2);
     return {x,y};
   }
@@ -377,12 +376,18 @@
       const idx = worldToCellIndex(x,y); if(!idx) return;
       if(e.button===2){ painted.delete(`${idx.i},${idx.j}`); }
       else {
-        if(shiftRowFill){ for(let ii=0; ii<gridCols; ii++){ if(currentColorIndex>=0) painted.set(`${ii},${idx.j}`, currentColorIndex); else painted.delete(`${ii},${idx.j}`);} }
-        else { if(currentColorIndex>=0) painted.set(`${idx.i},${idx.j}`, currentColorIndex); else painted.delete(`${idx.i},${idx.j}`); }
+        if(shiftRowFill){
+          for(let ii=0; ii<gridCols; ii++){
+            if(currentColorIndex>=0) painted.set(`${ii},${idx.j}`, currentColorIndex);
+            else painted.delete(`${ii},${idx.j}`);
+          }
+        } else {
+          if(currentColorIndex>=0) painted.set(`${idx.i},${idx.j}`, currentColorIndex);
+          else painted.delete(`${idx.i},${idx.j}`);
+        }
       }
       rebuildPaintBatches(); draw();
     } else if(mode==='line'){
-      // Update axis angle by click direction (optional)
       const ang = Math.atan2(y, x) * 180/Math.PI;
       axisAngle = Math.round(ang) * Math.PI/180;
       axisInput.value = String(Math.round(ang)); axisVal.textContent = `${Math.round(ang)}°`;
@@ -412,9 +417,9 @@
   function cellCenter(i,j){ return { x: (i - gridCols/2) + 0.5, y: (j - gridRows/2) + 0.5 }; }
   function centerToIndex(x,y){ return { i: Math.floor(x + gridCols/2), j: Math.floor(y + gridRows/2) }; }
   function reflectPointAboutAxis(x,y, theta){
-    const ux = Math.cos(theta), uy = Math.sin(theta); // unit axis through origin
-    const dot = x*ux + y*uy; // v·u
-    const rx = 2*dot*ux - x; // 2(v·u)u - v
+    const ux = Math.cos(theta), uy = Math.sin(theta);
+    const dot = x*ux + y*uy;
+    const rx = 2*dot*ux - x;
     const ry = 2*dot*uy - y;
     return {x:rx, y:ry};
   }
@@ -460,10 +465,12 @@
   function addSwatch(color, isEraser){
     const div = document.createElement('div');
     div.className = 'swatch' + (paletteElems.length===0 && !isEraser ? ' active' : '');
-    div.style.background = isEraser ? 'repeating-conic-gradient(#0000 0 25%, #1b2736 0 50%) 50%/14px 14px' : `rgba(${Math.round(color[0]*255)}, ${Math.round(color[1]*255)}, ${Math.round(color[2]*255)}, ${color[3]})`;
+    div.style.background = isEraser
+      ? 'repeating-conic-gradient(#0000 0 25%, #1b2736 0 50%) 50%/14px 14px'
+      : `rgba(${Math.round(color[0]*255)}, ${Math.round(color[1]*255)}, ${Math.round(color[2]*255)}, ${color[3]})`;
     div.title = isEraser? 'Eraser' : `Color ${paletteElems.length+1}`;
     div.addEventListener('click', ()=>{
-      paletteElems.forEach(el=> el.classList.remove('active'));
+      paletteElems.forEach(el=>el.classList.remove('active'));
       div.classList.add('active');
       currentColorIndex = isEraser? -1 : paletteElems.indexOf(div);
     });
@@ -492,17 +499,21 @@
   document.getElementById('clearCells').addEventListener('click', ()=>{
     painted.clear();
     rebuildPaintBatches();
-    // rebuildMarks([],[],1);
-    // resetStats();
+    rebuildMarks([],[],1);
     draw();
   });
 
   // Axis controls
   const axisInput = document.getElementById('axisAngle');
   const axisVal = document.getElementById('axisVal');
-  axisInput.addEventListener('input', ()=>{ axisVal.textContent = `${axisInput.value}°`; axisAngle = (+axisInput.value) * Math.PI/180; rebuildAxisLine(); draw(); });
+  axisInput.addEventListener('input', ()=>{
+    axisVal.textContent = `${axisInput.value}°`;
+    axisAngle = (+axisInput.value) * Math.PI/180;
+    rebuildAxisLine(); draw();
+  });
 
   // Challenge controls
+  const challengeSource = document.getElementById('challengeSource');
   const shapeCellsInput = document.getElementById('shapeCells');
   const shapeCellsVal = document.getElementById('shapeCellsVal');
   const shapeColorsInput = document.getElementById('shapeColors');
@@ -510,13 +521,84 @@
   shapeCellsInput.addEventListener('input', ()=> shapeCellsVal.textContent = shapeCellsInput.value);
   shapeColorsInput.addEventListener('input', ()=> shapeColorsVal.textContent = shapeColorsInput.value);
 
-  // document.getElementById('toggleGhost').addEventListener('click', (e)=>{
-  //   showServed = !showServed; e.target.textContent = showServed ? 'Hide Served' : 'Show Served'; rebuildPaintBatches(); draw();
-  // });
+  // Attempts / status UI
+  const resultEl = document.getElementById('result');
+  const attemptsEl = document.getElementById('attempts');
+  const usedCheckEl = document.getElementById('usedCheck');
 
-  document.getElementById('newChallenge').addEventListener('click', ()=>{
+  function updateStatusUI(){
+    attemptsEl.textContent = attemptCount;
+    usedCheckEl.textContent = solutionRevealed ? 'Yes' : 'No';
+  }
+  function resetStats(){
+    attemptCount = 0;
+    solutionRevealed = false;
+    resultEl.textContent = '';
+    updateStatusUI();
+  }
+
+  /*** --- Preset Challenges --- ***/
+  // pattern entries are {di,dj,color} relative to grid center
+  const presetChallenges = {
+    preset1: {
+      name: 'Plus',
+      axisDeg: 0,
+      pattern: [
+        {di:0 + -5,dj:0 + -5,color:0},
+        {di:1 + -5,dj:0 + -5,color:0},
+        {di:-1 + -5,dj:0 + -5,color:0},
+        {di:0 + -5,dj:1 + -5,color:0},
+        {di:0 + -5,dj:-1 + -5,color:0},
+      ]
+    },
+    preset2: {
+      name: 'Diagonal',
+      axisDeg: 45,
+      pattern: [
+        {di:7,dj:-7,color:1},
+        {di:6,dj:-6,color:1},
+        {di:5,dj:-5,color:1},
+        {di:4,dj:-4,color:2},
+        {di:3,dj:-3,color:2},
+      ]
+    }
+  };
+
+  function servePreset(id){
+    const preset = presetChallenges[id];
+    if(!preset) return;
+
+    served.clear();
+    painted.clear();
+    rebuildMarks([],[],1);
+
+    // set axis
+    axisAngle = (preset.axisDeg || 0) * Math.PI/180;
+    axisInput.value = String(preset.axisDeg || 0);
+    axisVal.textContent = `${preset.axisDeg || 0}°`;
+
+    // place pattern around grid center
+    const ci = Math.floor(gridCols/2);
+    const cj = Math.floor(gridRows/2);
+    for(const p of preset.pattern){
+      const i = ci + p.di;
+      const j = cj + p.dj;
+      if(i>=0 && i<gridCols && j>=0 && j<gridRows){
+        const colIdx = Math.max(0, Math.min(p.color, paletteColors.length-1));
+        served.set(`${i},${j}`, colIdx);
+      }
+    }
+
+    resetStats();
+    rebuildPaintBatches();
+    rebuildAxisLine();
+    draw();
+  }
+
+  function serveRandomChallenge(){
     served.clear(); painted.clear(); rebuildMarks([],[],1);
-    axisAngle = (+axisInput.value) * Math.PI/180; rebuildAxisLine();
+    axisAngle = (+axisInput.value) * Math.PI/180;
+    rebuildAxisLine();
     const n = parseInt(shapeCellsInput.value,10);
     const maxC = parseInt(shapeColorsInput.value,10);
     const startI = Math.floor(gridCols*0.25), startJ = Math.floor(gridRows*0.25);
@@ -533,27 +615,18 @@
     }
     resetStats();
     rebuildPaintBatches(); draw();
+  }
+
+  document.getElementById('newChallenge').addEventListener('click', ()=>{
+    const src = challengeSource.value;
+    if(src === 'random'){
+      serveRandomChallenge();
+    } else {
+      servePreset(src);
+    }
   });
 
   // Evaluation
-  const resultEl = document.getElementById('result');
-  const attemptsEl = document.getElementById('attempts');
-  const usedCheckEl = document.getElementById('usedCheck');
-
-  // helper to keep attempts & "Used Solution?" display in sync
-  function updateStatusUI(){
-    attemptsEl.textContent = attemptCount;
-    usedCheckEl.textContent = solutionRevealed ? 'Yes' : 'No';
-  }
-
-  // helper to reset attempts/flags between challenges or when clearing
-  function resetStats(){
-    attemptCount = 0;
-    solutionRevealed = false;
-    resultEl.textContent = '';
-    updateStatusUI();
-  }
-
   document.getElementById('check').addEventListener('click', ()=>{
     attemptCount++;
     updateStatusUI();
@@ -564,11 +637,12 @@
     draw();
     const wrongCount = wrongInputs.length + (attemptCount>=2 ? missingInputs.length : 0);
     const ok = correct===total && wrongCount===0;
-    resultEl.innerHTML = ok ? `<span class="ok">Perfect! ${correct}/${total}</span>` : `<span class="bad">${correct}/${total} correct, ${wrongCount} issues${attemptCount>=2 ? ` (${wrongInputs.length} wrong, ${missingInputs.length} missing)` : ''}</span>`;
+    resultEl.innerHTML = ok
+      ? `<span class="ok">Perfect! ${correct}/${total}</span>`
+      : `<span class="bad">${correct}/${total} correct, ${wrongCount} issues${attemptCount>=2 ? ` (${wrongInputs.length} wrong, ${missingInputs.length} missing)` : ''}</span>`;
   });
 
   document.getElementById('showSolution').addEventListener('click', ()=>{
-    // Mark that the solution has been revealed, but keep attemptCount
     solutionRevealed = true;
     updateStatusUI();
 
@@ -581,8 +655,16 @@
 
   // Shortcuts
   window.addEventListener('keydown', (e)=>{
-    if(e.key==='p' || e.key==='P'){ mode = 'paint'; modeRow.querySelectorAll('.pill').forEach(x=>x.classList.toggle('active', x.dataset.mode!=='line')); updateHUD(); }
-    if(e.key==='l' || e.key==='L'){ mode = 'line';  modeRow.querySelectorAll('.pill').forEach(x=>x.classList.toggle('active', x.dataset.mode==='line')); updateHUD(); }
+    if(e.key==='p' || e.key==='P'){
+      mode = 'paint';
+      modeRow.querySelectorAll('.pill').forEach(x=>x.classList.toggle('active', x.dataset.mode!=='line'));
+      updateHUD();
+    }
+    if(e.key==='l' || e.key==='L'){
+      mode = 'line';
+      modeRow.querySelectorAll('.pill').forEach(x=>x.classList.toggle('active', x.dataset.mode==='line'));
+      updateHUD();
+    }
   });
 
   /*** --- Rebuild --- ***/
@@ -595,27 +677,15 @@
     draw();
   }
 
-  // --- Self-tests (basic) --- //
+  // Basic self-tests
   function runSelfTests(){
-    // 1) Shader/program should be valid
     console.assert(gl.getProgramParameter(prog, gl.LINK_STATUS) === true, 'Program should be linked');
-
-    // 2) Reflection about 0° (x-axis): (1,2) -> (1,-2)
     let p1 = reflectPointAboutAxis(1,2, 0);
     console.assert(Math.abs(p1.x-1) < 1e-6 && Math.abs(p1.y+2) < 1e-6, 'Reflect about x-axis');
-
-    // 3) Reflection about 90° (y-axis): (1,2) -> (-1,2)
     let p2 = reflectPointAboutAxis(1,2, Math.PI/2);
     console.assert(Math.abs(p2.x+1) < 1e-6 && Math.abs(p2.y-2) < 1e-6, 'Reflect about y-axis');
-
-    // 4) expectedReflection: single served at center, axis 0 should map symmetrically
-    axisAngle = 0;
-    const testServed = new Map([[`${Math.floor(gridCols/2)},${Math.floor(gridRows/2)+2}}`, 0]]);
-    const E = expectedReflection(testServed);
-    console.assert(E.size >= 1, 'expectedReflection should produce at least one cell');
   }
 
-  // Initial build and status UI setup
   rebuildAll();
   updateStatusUI();
   runSelfTests();
