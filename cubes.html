@@ -1,0 +1,737 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Patterns — Cube / Octa / Icosa (face-aligned, consistent colors)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root{--bg:#07121b;--panel:rgba(6,10,14,0.9);--muted:rgba(230,240,255,0.75)}
+  html,body{height:100%;margin:0;background:var(--bg);color:#e6eef6;font-family:system-ui,Segoe UI,Roboto}
+  canvas{display:block;width:100vw;height:100vh}
+  #ui{position:fixed;left:12px;top:12px;z-index:10;background:var(--panel);padding:10px 12px;border-radius:10px;min-width:310px}
+  label{display:block;margin:6px 0;font-size:13px}
+  select,input[type=range]{margin-left:8px;vertical-align:middle}
+  #value{font-weight:600;margin-left:8px}
+  .muted{font-size:12px;color:var(--muted);margin-top:6px}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="ui">
+  <div style="font-weight:700;margin-bottom:6px">Patterns — Primitives</div>
+
+  <label>Pattern:
+    <select id="pattern">
+      <option value="Line">Line</option>
+      <option value="L">L</option>
+      <option value="T">T</option>
+      <option value="Cross">Cross</option>
+      <option value="Axes">Axes</option>
+      <option value="MixedLineL">Mixed (Line + L)</option>
+      <option value="MixedTL">Mixed (T + L connected)</option>
+    </select>
+  </label>
+
+  <label>Primitive:
+    <select id="primitive">
+      <option value="Cube">Cube</option>
+      <option value="Octahedron">Octahedron</option>
+      <option value="Icosahedron">Icosahedron</option>
+    </select>
+  </label>
+
+  <label>Count:
+    <input id="count" type="range" min="1" max="80" value="9" step="1">
+    <span id="value">9</span>
+  </label>
+
+  <div class="muted">Drag to rotate • Wheel to zoom • Strict alternation • Fixed global palette • Tiny gaps</div>
+</div>
+
+<script>
+(() => {
+  // ---- WebGL init ----
+  const canvas = document.getElementById('gl');
+  const gl = canvas.getContext('webgl', { antialias: true });
+  if (!gl) { alert('WebGL not available'); return; }
+  function resize(){
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const w = Math.floor(window.innerWidth * dpr);
+    const h = Math.floor(window.innerHeight * dpr);
+    if (canvas.width !== w || canvas.height !== h){
+      canvas.width = w; canvas.height = h;
+      gl.viewport(0,0,w,h);
+    }
+  }
+  window.addEventListener('resize', resize); resize();
+
+  const vs = `
+    attribute vec3 aPos;
+    attribute vec3 aCol;
+    uniform mat4 uMVP;
+    varying vec3 vCol;
+    void main(){
+      vCol = aCol;
+      gl_Position = uMVP * vec4(aPos,1.0);
+    }`;
+  const fs = `
+    precision mediump float;
+    varying vec3 vCol;
+    void main(){ gl_FragColor = vec4(vCol,1.0); }`;
+  function compile(type,src){
+    const s = gl.createShader(type);
+    gl.shaderSource(s,src); gl.compileShader(s);
+    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  const prog = gl.createProgram();
+  gl.attachShader(prog,compile(gl.VERTEX_SHADER,vs));
+  gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,fs));
+  gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+
+  const aPos = gl.getAttribLocation(prog,'aPos');
+  const aCol = gl.getAttribLocation(prog,'aCol');
+  const uMVP = gl.getUniformLocation(prog,'uMVP');
+  gl.enable(gl.DEPTH_TEST);
+
+  // ---- math (column-major) ----
+  const EPS=1e-6, PI=Math.PI, TAU=2*Math.PI;
+  const len3 = v => Math.hypot(v[0],v[1],v[2]);
+  const normalize3 = v => { const L=len3(v)||1; return [v[0]/L,v[1]/L,v[2]/L]; };
+  const dot = (a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+  const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+  const add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]];
+  const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+  const mul=(a,s)=>[a[0]*s,a[1]*s,a[2]*s];
+  function mat3AxisAngle(axis,ang){
+    const u=normalize3(axis), ux=u[0],uy=u[1],uz=u[2],c=Math.cos(ang),s=Math.sin(ang),t=1-c;
+    return [
+      t*ux*ux+c,      t*ux*uy-s*uz, t*ux*uz+s*uy,
+      t*ux*uy+s*uz,   t*uy*uy+c,    t*uy*uz - s*ux,
+      t*ux*uz - s*uy, t*uy*uz+s*ux, t*uz*uz + c
+    ];
+  }
+  const mat3Apply = (M,v)=>[ M[0]*v[0]+M[3]*v[1]+M[6]*v[2],
+                             M[1]*v[0]+M[4]*v[1]+M[7]*v[2],
+                             M[2]*v[0]+M[5]*v[1]+M[8]*v[2] ];
+  const mat3Mul=(A,B)=>[
+    A[0]*B[0]+A[3]*B[1]+A[6]*B[2], A[1]*B[0]+A[4]*B[1]+A[7]*B[2], A[2]*B[0]+A[5]*B[1]+A[8]*B[2],
+    A[0]*B[3]+A[3]*B[4]+A[6]*B[5], A[1]*B[3]+A[4]*B[4]+A[7]*B[5], A[2]*B[3]+A[5]*B[4]+A[8]*B[5],
+    A[0]*B[6]+A[3]*B[7]+A[6]*B[8], A[1]*B[6]+A[4]*B[7]+A[7]*B[8], A[2]*B[6]+A[5]*B[7]+A[8]*B[8]
+  ];
+  function mat4Perspective(fovy,aspect,near,far){
+    const f=1/Math.tan(fovy/2), nf=1/(near-far), o=new Float32Array(16);
+    o[0]=f/aspect; o[1]=0; o[2]=0; o[3]=0;
+    o[4]=0; o[5]=f; o[6]=0; o[7]=0;
+    o[8]=0; o[9]=0; o[10]=(far+near)*nf; o[11]=-1;
+    o[12]=0; o[13]=0; o[14]=(2*far*near)*nf; o[15]=0;
+    return o;
+  }
+  function mat4LookAt(eye,center,up){
+    const z=normalize3([eye[0]-center[0],eye[1]-center[1],eye[2]-center[2]]);
+    const x=normalize3(cross(up,z));
+    const y=cross(z,x);
+    const o=new Float32Array(16);
+    o[0]=x[0]; o[1]=y[0]; o[2]=z[0]; o[3]=0;
+    o[4]=x[1]; o[5]=y[1]; o[6]=z[1]; o[7]=0;
+    o[8]=x[2]; o[9]=y[2]; o[10]=z[2]; o[11]=0;
+    o[12]=-(x[0]*eye[0]+x[1]*eye[1]+x[2]*eye[2]);
+    o[13]=-(y[0]*eye[0]+y[1]*eye[1]+y[2]*eye[2]);
+    o[14]=-(z[0]*eye[0]+z[1]*eye[1]+z[2]*eye[2]);
+    o[15]=1;
+    return o;
+  }
+  function mat4Mul(a,b){
+    const o=new Float32Array(16);
+    for(let i=0;i<4;i++){
+      for(let j=0;j<4;j++){
+        o[j*4+i]=a[0*4+i]*b[j*4+0]+a[1*4+i]*b[j*4+1]+a[2*4+i]*b[j*4+2]+a[3*4+i]*b[j*4+3];
+      }
+    }
+    return o;
+  }
+
+  // ---- fixed global palette ----
+  function fixedPalette(n){
+    const out=[];
+    for(let i=0;i<n;i++){
+      const a=i*137.508*Math.PI/180;
+      const r=0.55+0.45*Math.sin(a*1.00+0.10);
+      const g=0.55+0.45*Math.sin(a*1.21+2.10);
+      const b=0.55+0.45*Math.sin(a*0.93+4.20);
+      out.push([r,g,b]);
+    }
+    return out;
+  }
+  const PALETTE=fixedPalette(64);
+  const CUBE_COLORS={
+    '+X':PALETTE[2], '-X':PALETTE[8],
+    '+Y':PALETTE[14], '-Y':PALETTE[20],
+    '+Z':PALETTE[32], '-Z':PALETTE[40],
+  };
+
+  // ---- geometry helpers ----
+  function triNormals(pos){
+    const N=new Float32Array(pos.length/3);
+    for(let i=0;i<pos.length;i+=9){
+      const ax=pos[i],ay=pos[i+1],az=pos[i+2];
+      const bx=pos[i+3],by=pos[i+4],bz=pos[i+5];
+      const cx=pos[i+6],cy=pos[i+7],cz=pos[i+8];
+      const n=normalize3(cross([bx-ax,by-ay,bz-az],[cx-ax,cy-ay,cz-az]));
+      const k=(i/3); N[k]=n[0]; N[k+1]=n[1]; N[k+2]=n[2];
+    }
+    return N;
+  }
+  function inradius(pos){
+    let r=Infinity;
+    for(let i=0;i<pos.length;i+=9){
+      const ax=pos[i],ay=pos[i+1],az=pos[i+2];
+      const bx=pos[i+3],by=pos[i+4],bz=pos[i+5];
+      const cx=pos[i+6],cy=pos[i+7],cz=pos[i+8];
+      const n=cross([bx-ax,by-ay,bz-az],[cx-ax,cy-ay,cz-az]);
+      const L=len3(n); if(L<EPS) continue;
+      const d=Math.abs((n[0]*ax+n[1]*ay+n[2]*az)/L);
+      if(d<r) r=d;
+    }
+    return isFinite(r)?r:0.5;
+  }
+
+  function makeCube(){
+    const s=0.5;
+    const P=new Float32Array([
+      // +X
+      s,-s,-s, s,s,-s, s,s,s,  s,-s,-s, s,s,s, s,-s,s,
+      // -X
+      -s,-s,s, -s,s,s, -s,s,-s, -s,-s,s, -s,s,-s, -s,-s,-s,
+      // +Y
+      -s,s,-s, -s,s,s, s,s,s,  -s,s,-s, s,s,s, s,s,-s,
+      // -Y
+      -s,-s,s, s,-s,s, s,-s,-s, -s,-s,s, s,-s,-s, -s,-s,-s,
+      // +Z
+      -s,-s,s, s,-s,s, s,s,s,  -s,-s,s, s,s,s, -s,s,s,
+      // -Z
+      s,-s,-s, -s,-s,-s, -s,s,-s,  s,-s,-s, -s,s,-s, s,s,-s
+    ]);
+    const N=triNormals(P);
+    return {positions:P, triNormals:N, r_in:0.5, triCount:P.length/9};
+  }
+
+  function makeOctahedron(){
+    const V=[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+    const F=[[0,2,4],[2,1,4],[1,3,4],[3,0,4],[2,0,5],[1,2,5],[3,1,5],[0,3,5]];
+    let P=[]; for(const f of F) P.push(...V[f[0]],...V[f[1]],...V[f[2]]);
+    let pos=new Float32Array(P);
+    const s=0.5/inradius(pos); for(let i=0;i<pos.length;i++) pos[i]*=s;
+    const N=triNormals(pos);
+    const colors=new Float32Array(F.length*9);
+    for(let t=0;t<F.length;t++){const c=PALETTE[(t*3)%PALETTE.length]; for(let v=0;v<3;v++){const i=t*9+v*3; colors[i]=c[0];colors[i+1]=c[1];colors[i+2]=c[2];}}
+    return {positions:pos, triNormals:N, colors, r_in:0.5, triCount:F.length};
+  }
+
+  function makeIcosahedron(){
+    const t=(1+Math.sqrt(5))/2;
+    const V=[[-1,t,0],[1,t,0],[-1,-t,0],[1,-t,0],[0,-1,t],[0,1,t],[0,-1,-t],[0,1,-t],[t,0,-1],[t,0,1],[-t,0,-1],[-t,0,1]];
+    const F=[[0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],[1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],[3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],[4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1]];
+    let P=[]; for(const f of F) P.push(...V[f[0]],...V[f[1]],...V[f[2]]);
+    let pos=new Float32Array(P);
+    const s=0.5/inradius(pos); for(let i=0;i<pos.length;i++) pos[i]*=s;
+    const N=triNormals(pos);
+    const colors=new Float32Array(F.length*9);
+    for(let tI=0;tI<F.length;tI++){const c=PALETTE[(tI*5+11)%PALETTE.length]; for(let v=0;v<3;v++){const i=tI*9+v*3; colors[i]=c[0];colors[i+1]=c[1];colors[i+2]=c[2];}}
+    return {positions:pos, triNormals:N, colors, r_in:0.5, triCount:F.length};
+  }
+
+  const PRIMS={ Cube:makeCube(), Octahedron:makeOctahedron(), Icosahedron:makeIcosahedron() };
+
+  // Build a plan: array of { parent, want }, starting with root (index 0, parent:-1)
+function planForPattern(patternName, count){
+  const plan = [];
+  // root
+  plan.push({ parent: -1, want: '+X' });
+
+  if (patternName === 'Line'){
+    let last = 0;
+    for (let i=1;i<count;i++){
+      plan.push({ parent: last, want: '+X' });
+      last = i;
+    }
+    return plan;
+  }
+
+  if (patternName === 'L'){
+    // Grow two arms from root alternatively: +X, +Y, +X, +Y, ...
+    let armX = 0; // parent index to extend along +X arm
+    let armY = 0; // parent index to extend along +Y arm
+    for (let i=1;i<count;i++){
+      if (i % 2 === 1){
+        // extend +X arm
+        plan.push({ parent: armX, want: '+X' });
+        armX = i;
+      }else{
+        // extend +Y arm
+        plan.push({ parent: armY, want: '+Y' });
+        armY = i;
+      }
+    }
+    return plan;
+  }
+
+  // Fallback: line
+  let last = 0;
+  for (let i=1;i<count;i++){
+    plan.push({ parent: last, want: '+X' });
+    last = i;
+  }
+  return plan;
+}
+
+
+  // ---- patterns ----
+  function pattLine(n){const a=[];for(let i=0;i<n;i++) a.push([i,0,0]);return a;}
+  function pattL(n){const a=[];if(n<=0)return a;a.push([0,0,0]);let s=1;while(a.length<n){a.push([s,0,0]);if(a.length>=n)break;a.push([0,s,0]);s++;}return a;}
+  function pattT(n){const a=[];if(n<=0)return a;a.push([0,0,0]);let s=1;while(a.length<n){a.push([ s,0,0]);if(a.length>=n)break;a.push([-s,0,0]);if(a.length>=n)break;a.push([0,s,0]);s++;}return a;}
+  function pattCross(n){const a=[];if(n<=0)return a;a.push([0,0,0]);let s=1;while(a.length<n){a.push([ s,0,0]);if(a.length>=n)break;a.push([-s,0,0]);if(a.length>=n)break;a.push([0, s,0]);if(a.length>=n)break;a.push([0,-s,0]);s++;}return a;}
+  function pattAxes(n){const a=[];if(n<=0)return a;a.push([0,0,0]);let s=1;while(a.length<n){a.push([ s,0,0]);if(a.length>=n)break;a.push([-s,0,0]);if(a.length>=n)break;a.push([0, s,0]);if(a.length>=n)break;a.push([0,-s,0]);if(a.length>=n)break;a.push([0,0, s]);if(a.length>=n)break;a.push([0,0,-s]);s++;}return a;}
+  function pattMixedLineL(n){const a=[];if(n<=0)return a;a.push([0,0,0]);if(n>=2)a.push([1,0,0]);if(n>=3)a.push([0,1,0]);if(n>=4)a.push([0,0,1]);let s=2;while(a.length<n){a.push([s,0,0]);if(a.length>=n)break;a.push([0,s,0]);if(a.length>=n)break;a.push([0,0,s]);s++;}return a;}
+  function pattMixedTL(n){const a=[];if(n<=0)return a;a.push([-1,0,0],[0,0,0],[1,0,0]);for(let i=1;i<=5;i++) a.push([0,-i,0]);a.push([1,-5,0]);if(n<=a.length) return a.slice(0,n);let s=1;while(a.length<n){a.push([-1-s,0,0]);if(a.length>=n)break;a.push([1+s,0,0]);if(a.length>=n)break;a.push([1+s,-5,0]);s++;}return a;}
+  const PATTERNS={Line:pattLine,L:pattL,T:pattT,Cross:pattCross,Axes:pattAxes,MixedLineL:pattMixedLineL,MixedTL:pattMixedTL};
+
+  function stepInfo(name){
+    switch(name){
+      case 'L': return {min:1, step:2};
+      case 'T': return {min:1, step:3};
+      case 'Cross': return {min:1, step:4};
+      case 'Line': return {min:1, step:1};
+      case 'Axes': return {min:1, step:6};
+      case 'MixedLineL': return {min:3, step:3};
+      case 'MixedTL': return {min:9, step:3};
+      default: return {min:1, step:1};
+    }
+  }
+
+  // ---- placement & orientation (canonical reset, strict alternation) ----
+  const GAP = 0.02; // 2% gap
+  function neighborsOf(offsets){
+    const N = offsets.map(()=>[]);
+    for(let i=0;i<offsets.length;i++){
+      for(let j=0;j<offsets.length;j++){
+        if(i===j) continue;
+        const dx=offsets[j][0]-offsets[i][0], dy=offsets[j][1]-offsets[i][1], dz=offsets[j][2]-offsets[i][2];
+        if(Math.abs(dx)+Math.abs(dy)+Math.abs(dz)===1) N[i].push({idx:j, dir:normalize3([dx,dy,dz])});
+      }
+    }
+    return N;
+  }
+  function pickFaceNormal(faceNormals, targetDir){
+    let best=-1, out=[1,0,0];
+    for(let i=0;i<faceNormals.length;i+=3){
+      const n=[faceNormals[i],faceNormals[i+1],faceNormals[i+2]];
+      const d=dot(n,targetDir);
+      if(d>best){best=d;out=n;}
+    }
+    return out;
+  }
+
+  // Deduplicate canonical triangle normals into a unique set (unit vectors)
+function uniqueFaceNormals(faceNormals, eps=1e-6){
+  const uniq = [];
+  for(let i=0;i<faceNormals.length;i+=3){
+    const n = normalize3([faceNormals[i], faceNormals[i+1], faceNormals[i+2]]);
+    // check if equivalent (or opposite) already exists -> we keep both directions (+n and -n) as separate
+    let exists = false;
+    for(const u of uniq){
+      if (Math.abs(n[0]-u[0])<eps && Math.abs(n[1]-u[1])<eps && Math.abs(n[2]-u[2])<eps){ exists=true; break; }
+    }
+    if (!exists) uniq.push(n);
+  }
+  return uniq;
+}
+
+// Closest canonical face normal to a target direction
+function closestNormal(normals, target){
+  let best = -Infinity, bestN = normals[0];
+  for(const n of normals){
+    const d = dot(n, target);
+    if (d > best){ best = d; bestN = n; }
+  }
+  return bestN;
+}
+
+// Step vectors we "want" per arm (grid guideline)
+const AXIS_DIRS = {
+  '+X': [ 1, 0, 0], '-X': [-1, 0, 0],
+  '+Y': [ 0, 1, 0], '-Y': [ 0,-1, 0],
+  '+Z': [ 0, 0, 1], '-Z': [ 0, 0,-1],
+};
+
+// Returns a *distinct* canonical face normal for this arm, avoiding those already used at the same parent.
+function chooseFaceDirForWant(FACE_UNIQ, wantDir, usedDirsAtParent){
+  // Score = dot(n, wantDir) - penalty if too close to dirs already used by siblings
+  let bestScore = -1e9, best = FACE_UNIQ[0];
+  for (const n of FACE_UNIQ){
+    let sc = dot(n, wantDir);
+    // Penalize similarity to siblings to keep arms separate
+    for (const u of usedDirsAtParent){
+      sc -= 0.6 * Math.max(0, dot(n, u));  // 0.6 penalty weight works well
+    }
+    if (sc > bestScore){ bestScore = sc; best = n; }
+  }
+  return best;
+}
+
+
+  function R_map(a,b){
+    const aa=normalize3(a), bb=normalize3(b);
+    let d=Math.max(-1,Math.min(1,dot(aa,bb)));
+    if(d>1-1e-9) return [1,0,0,0,1,0,0,0,1];
+    if(d<-1+1e-9){
+      let axis=cross(aa,[1,0,0]); if(len3(axis)<1e-6) axis=cross(aa,[0,1,0]);
+      return mat3AxisAngle(axis, Math.PI);
+    }
+    return mat3AxisAngle(cross(aa,bb), Math.acos(d));
+  }
+  function bestSpinAround(axis, baseR, canonicalFaceNormals, otherDirs){
+    // try spins of 0,120,240deg around axis to best align other neighbor directions
+    let bestR=baseR, bestScore=-1e9;
+    for(let k=0;k<3;k++){
+      const Rspin = mat3Mul(mat3AxisAngle(axis, k*(TAU/3)), baseR);
+      let score=0;
+      for(const od of otherDirs){
+        let best=0;
+        for(let i=0;i<canonicalFaceNormals.length;i+=3){
+          const fn=[canonicalFaceNormals[i],canonicalFaceNormals[i+1],canonicalFaceNormals[i+2]];
+          const w=mat3Apply(Rspin, fn);
+          best=Math.max(best, dot(w, od));
+        }
+        score+=best;
+      }
+      if(score>bestScore){bestScore=score;bestR=Rspin;}
+    }
+    return bestR;
+  }
+
+  function placeAndOrient(offsets_unused, primName){
+  const prim = PRIMS[primName];
+  const spacing = prim.r_in * 2 * (1 + GAP);
+
+  // Build plan for the active UI state:
+  const patternName = document.getElementById('pattern').value;
+  const count = Math.max(+document.getElementById('count').value, 1);
+  const plan = planForPattern(patternName, count);
+
+  // CUBE: stick to the old behavior (axis grid centers), zero rotation
+  if (primName === 'Cube'){
+    // Reuse your existing offsets from the pattern functions:
+    const patFn = PATTERNS[patternName] || PATTERNS['Line'];
+    const offs = patFn(count);
+    const centers = offs.map(o => [o[0]*spacing, o[1]*spacing, o[2]*spacing]);
+    const rotations = offs.map(()=>[1,0,0, 0,1,0, 0,0,1]);
+    return { centers, rotations, spacing };
+  }
+
+  // NON-CUBE: walk along the primitive's canonical face normals
+  const faceTriNormals = prim.triNormals;
+  const FACE_UNIQ = uniqueFaceNormals(faceTriNormals); // unit normals of faces
+  const centers = new Array(plan.length).fill(null);
+  const rotations = new Array(plan.length).fill(null);
+  const depth = new Array(plan.length).fill(0);
+
+  // Root at origin (canonical orientation chosen later)
+  centers[0] = [0,0,0];
+  rotations[0] = [1,0,0, 0,1,0, 0,0,1];
+
+  // Build adjacency from plan
+  const children = plan.map(()=>[]);
+  for (let i=1;i<plan.length;i++){
+    children[plan[i].parent].push(i);
+    depth[i] = depth[plan[i].parent] + 1;
+  }
+
+  // Helper: map desired axis to a canonical face direction
+  const axisToFaceDir = (want) => closestNormal(FACE_UNIQ, AXIS_DIRS[want]);
+
+    // Track which outward dirs each parent already used (to keep arms distinct)
+    const usedOutDirs = plan.map(() => []);
+
+  // NEW: per-node “arm direction” memory: for a given `want` axis at this node,
+  // reuse the same face-normal step chosen earlier on that arm.
+  const armDir = plan.map(() => ({})); // armDir[nodeIndex][wantString] -> unit vec (face normal)
+
+  // First pass: choose directions and centers (sibling-aware + arm inheritance)
+  for (let i = 1; i < plan.length; i++) {
+    const p = plan[i];
+    const parent = p.parent;
+    const want = p.want;                 // e.g. '+X', '+Y', ...
+    const wantAxis = AXIS_DIRS[want];    // guideline axis (unit)
+
+    let stepDir;
+    // If this parent (i.e., this arm) already decided a face-normal for this `want`, reuse it
+    if (armDir[parent][want]) {
+      stepDir = armDir[parent][want];
+    } else {
+      // Choose a distinct face-normal at the parent, avoiding siblings' directions
+      stepDir = chooseFaceDirForWant(FACE_UNIQ, wantAxis, usedOutDirs[parent]);
+      armDir[parent][want] = stepDir;         // remember for this arm at this parent
+      usedOutDirs[parent].push(stepDir);      // reserve it so siblings won’t reuse
+    }
+
+    // Inherit this arm direction to the child node as well,
+    // so future extensions from this child with the same `want` keep using the SAME stepDir.
+    armDir[i][want] = stepDir;
+
+    // Position: parent center + spacing * stepDir
+    const pc = centers[parent];
+    centers[i] = [ pc[0] + spacing * stepDir[0],
+                   pc[1] + spacing * stepDir[1],
+                   pc[2] + spacing * stepDir[2] ];
+  }
+
+
+
+  // Orientation per node (canonical reset each time)
+  // We want the face on child i that looks back to parent to align to vector (parent -> child) * -1
+  function pickFaceNormal(faceNormals, targetDir){
+    let best=-1, out=[1,0,0];
+    for (let k=0;k<faceNormals.length;k+=3){
+      const n=[faceNormals[k],faceNormals[k+1],faceNormals[k+2]];
+      const d=dot(n,targetDir);
+      if (d>best){ best=d; out=n; }
+    }
+    return out;
+  }
+  function bestSpinAround(axis, baseR, canonicalFaceNormals, otherDirs){
+    let bestR=baseR, bestScore=-1e9;
+    for (let k=0;k<3;k++){
+      const Rspin = mat3Mul(mat3AxisAngle(axis, k*(2*Math.PI/3)), baseR);
+      let score=0;
+      for (const od of otherDirs){
+        let localBest=0;
+        for (let i=0;i<canonicalFaceNormals.length;i+=3){
+          const fn=[canonicalFaceNormals[i],canonicalFaceNormals[i+1],canonicalFaceNormals[i+2]];
+          const w=mat3Apply(Rspin, fn);
+          localBest = Math.max(localBest, dot(w, od));
+        }
+        score += localBest;
+      }
+      if (score>bestScore){ bestScore=score; bestR=Rspin; }
+    }
+    return bestR;
+  }
+
+  // Root orientation: look at its immediate children wants; pick a primary and spin to fit others
+  if (plan.length>1){
+    const rootChild = children[0][0] ?? null;
+    const primaryWant = rootChild!=null ? plan[rootChild].want : '+X';
+    const primaryDir = axisToFaceDir(primaryWant);
+    const rootFace = pickFaceNormal(faceTriNormals, primaryDir);
+    let Rroot = R_map(rootFace, primaryDir);
+    const others = children[0].slice(1).map(ci => axisToFaceDir(plan[ci].want));
+    Rroot = bestSpinAround(primaryDir, Rroot, faceTriNormals, others);
+    rotations[0] = Rroot;
+  }
+
+  // Other nodes
+  for (let i=1;i<plan.length;i++){
+    const parent = plan[i].parent;
+    const fromParent = normalize3([
+      centers[i][0]-centers[parent][0],
+      centers[i][1]-centers[parent][1],
+      centers[i][2]-centers[parent][2]
+    ]);
+    // child should have a face pointing BACK to parent: requiredDir = -fromParent
+    const requiredDir = [-fromParent[0], -fromParent[1], -fromParent[2]];
+    const face = pickFaceNormal(faceTriNormals, requiredDir);
+    let R = R_map(face, requiredDir);
+
+    // Strict alternation: flip 180 around the link axis for odd depth
+    if (depth[i] & 1){
+      R = mat3Mul(mat3AxisAngle(requiredDir, Math.PI), R);
+    }
+
+    // If child has its own children, spin to best match their desired outgoing directions
+    const others = children[i].map(ci => {
+  const w = plan[ci].want;
+  // Prefer the *actual* face direction we locked for this arm,
+  // otherwise fall back to the canonical nearest face to the axis.
+  return armDir[i][w] || axisToFaceDir(w);
+});
+
+    if (others.length) R = bestSpinAround(requiredDir, R, faceTriNormals, others);
+
+    rotations[i] = R;
+  }
+
+  return { centers, rotations, spacing };
+}
+
+  // ---- big buffers (ONE declaration only) ----
+  const posBuf = gl.createBuffer();
+  const colBuf = gl.createBuffer();
+  let vertexCount = 0;
+
+  // cube color mapping by WORLD normal only
+  function cubeColorForWorldNormal(n){
+  const ax=Math.abs(n[0]), ay=Math.abs(n[1]), az=Math.abs(n[2]);
+  // small epsilon to break ties consistently:
+  const eps = 1e-6;
+  if (ax >= ay - eps && ax >= az - eps) return n[0] >= 0 ? CUBE_COLORS['+X'] : CUBE_COLORS['-X'];
+  if (ay >= ax - eps && ay >= az - eps) return n[1] >= 0 ? CUBE_COLORS['+Y'] : CUBE_COLORS['-Y'];
+  return n[2] >= 0 ? CUBE_COLORS['+Z'] : CUBE_COLORS['-Z'];
+}
+
+  function buildScene(offsets, primName){
+    const prim=PRIMS[primName];
+    const {centers, rotations} = placeAndOrient(offsets, primName);
+    const triCount = prim.positions.length/9;
+    const totalVerts = offsets.length * triCount * 3;
+    const P = new Float32Array(totalVerts*3);
+    const C = new Float32Array(totalVerts*3);
+
+    // local tri normals from primitive (canonical)
+    const localN=[]; for(let t=0;t<triCount;t++) localN.push([prim.triNormals[t*3],prim.triNormals[t*3+1],prim.triNormals[t*3+2]]);
+    let pI=0, cI=0, isCube=(primName==='Cube');
+
+    for(let idx=0; idx<offsets.length; idx++){
+      const ctr=centers[idx], R=rotations[idx];
+      for(let t=0;t<triCount;t++){
+        const base=t*9;
+        for(let v=0;v<3;v++){
+          const lx=prim.positions[base+v*3], ly=prim.positions[base+v*3+1], lz=prim.positions[base+v*3+2];
+          const wx = R[0]*lx + R[3]*ly + R[6]*lz + ctr[0];
+          const wy = R[1]*lx + R[4]*ly + R[7]*lz + ctr[1];
+          const wz = R[2]*lx + R[5]*ly + R[8]*lz + ctr[2];
+          P[pI++]=wx; P[pI++]=wy; P[pI++]=wz;
+        }
+        if(isCube){
+          const nW = mat3Apply(R, localN[t]);
+          const col = cubeColorForWorldNormal(nW);
+          for(let v=0;v<3;v++){ C[cI++]=col[0]; C[cI++]=col[1]; C[cI++]=col[2]; }
+        }else{
+          const cb=t*9;
+          for(let v=0;v<3;v++){ C[cI++]=prim.colors[cb+v*3]; C[cI++]=prim.colors[cb+v*3+1]; C[cI++]=prim.colors[cb+v*3+2]; }
+        }
+      }
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, P, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos,3,gl.FLOAT,false,0,0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, colBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, C, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(aCol);
+    gl.vertexAttribPointer(aCol,3,gl.FLOAT,false,0,0);
+
+    vertexCount = totalVerts;
+  }
+
+  // ---- camera/controls ----
+  let yaw=PI*0.25, pitch=-0.25, zoom=1.0;
+  let dragging=false, lx=0, ly=0;
+  canvas.addEventListener('pointerdown',e=>{dragging=true; lx=e.clientX; ly=e.clientY; canvas.setPointerCapture&&canvas.setPointerCapture(e.pointerId);});
+  canvas.addEventListener('pointerup',e=>{dragging=false; canvas.releasePointerCapture&&canvas.releasePointerCapture(e.pointerId);});
+  canvas.addEventListener('pointermove',e=>{ if(!dragging) return; const dx=e.clientX-lx, dy=e.clientY-ly; lx=e.clientX; ly=e.clientY; yaw+=dx*0.01; pitch+=dy*0.01; pitch=Math.max(-PI/2+0.01, Math.min(PI/2-0.01, pitch)); });
+  canvas.addEventListener('wheel',e=>{ e.preventDefault(); zoom*=Math.exp(-e.deltaY*0.0012); zoom=Math.max(0.25,Math.min(6.0,zoom)); }, {passive:false});
+
+  function perspective(fovy, aspect, near, far){ return mat4Perspective(fovy,aspect,near,far); }
+  function lookAt(eye,center,up){ return mat4LookAt(eye,center,up); }
+
+  // ---- UI ----
+  const selPattern=document.getElementById('pattern');
+  const selPrim=document.getElementById('primitive');
+  const slider=document.getElementById('count');
+  const lbl=document.getElementById('value');
+
+  function applyStep(){
+    const info=stepInfo(selPattern.value);
+    slider.min=info.min; slider.step=info.step;
+    if(+slider.value<info.min) slider.value=info.min;
+    let v=+slider.value;
+    if(info.step>1){ const k=Math.floor((v-info.min)/info.step); v=info.min+k*info.step; slider.value=Math.max(info.min,v); }
+    lbl.textContent=slider.value;
+  }
+  selPattern.addEventListener('change',()=>{applyStep();updateScene();});
+  selPrim.addEventListener('change',()=>updateScene());
+  slider.addEventListener('input',()=>{lbl.textContent=slider.value; updateScene();});
+  applyStep();
+
+  // ---- scene state & update ----
+  let sceneCenter=[0,0,0], sceneRadius=3;
+  function updateScene(){
+  const patternName = selPattern.value;
+  const n = Math.max(+slider.value, 1);
+  const primName = selPrim.value;
+
+  // Get the integer guideline offsets from the pattern (for cubes),
+  // but for non-cubes we'll ignore these for bounds/centers.
+  const patFn = PATTERNS[patternName] || PATTERNS['Line'];
+  const offsets = patFn(n);
+
+  // Build placement+buffers
+  const placement = placeAndOrient(offsets, primName);
+  buildScene(offsets, primName); // your buildScene already uses placeAndOrient internally; if not, pass placement in
+
+  // Camera bounds from actual centers (not grid offsets) for non-cubes
+  let pts;
+  if (primName === 'Cube') {
+    const prim = PRIMS[primName];
+    const spacing = prim.r_in * 2 * (1 + GAP);
+    pts = offsets.map(o => [o[0]*spacing, o[1]*spacing, o[2]*spacing]);
+  } else {
+    pts = placement.centers; // <-- true world centers
+  }
+
+  if (!pts.length){
+    sceneCenter = [0,0,0];
+    sceneRadius = 2;
+    return;
+  }
+
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity,minZ=Infinity,maxZ=-Infinity;
+  for (const p of pts){
+    if (p[0] < minX) minX = p[0]; if (p[0] > maxX) maxX = p[0];
+    if (p[1] < minY) minY = p[1]; if (p[1] > maxY) maxY = p[1];
+    if (p[2] < minZ) minZ = p[2]; if (p[2] > maxZ) maxZ = p[2];
+  }
+  sceneCenter = [(minX+maxX)/2, (minY+maxY)/2, (minZ+maxZ)/2];
+  const sx = (maxX-minX)||1, sy=(maxY-minY)||1, sz=(maxZ-minZ)||1;
+  sceneRadius = Math.sqrt((sx/2)**2 + (sy/2)**2 + (sz/2)**2) + 0.8;
+}
+
+  updateScene();
+
+  // ---- render loop ----
+  function render(){
+    resize();
+    gl.clearColor(0.04,0.07,0.12,1);
+    gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+
+    const aspect = canvas.width / canvas.height;
+    const proj = perspective(Math.PI/4, aspect, 0.1, 2000);
+    const dist = Math.abs(sceneRadius/Math.sin(Math.PI/8))+1;
+    const d=dist*zoom;
+    const ex = sceneCenter[0] + d*Math.cos(pitch)*Math.sin(yaw);
+    const ey = sceneCenter[1] + d*Math.sin(pitch);
+    const ez = sceneCenter[2] + d*Math.cos(pitch)*Math.cos(yaw);
+    const view = lookAt([ex,ey,ez], sceneCenter, [0,1,0]);
+    const mvp = mat4Mul(proj, view);
+    gl.uniformMatrix4fv(uMVP,false,mvp);
+
+    if (vertexCount>0){
+      gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos,3,gl.FLOAT,false,0,0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, colBuf);
+      gl.enableVertexAttribArray(aCol);
+      gl.vertexAttribPointer(aCol,3,gl.FLOAT,false,0,0);
+      gl.drawArrays(gl.TRIANGLES,0,vertexCount);
+    }
+    requestAnimationFrame(render);
+  }
+  requestAnimationFrame(render);
+})();
+</script>
+</body>
+</html>
