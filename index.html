@@ -11,7 +11,7 @@
     .app { display:flex; gap:16px; height:100%; padding:14px; }
     #glwrap { flex:1; position:relative; border-radius:14px; overflow:hidden; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
     canvas { width:100%; height:100%; display:block; background:#0a0f14; }
-    .hud { position:absolute; left:10px; bottom:10px; background:rgba(0,0,0,.4); padding:8px 10px; border-radius:10px; font-size:12px; color:#b9c6d6; }
+    .hud { display:none; position:absolute; left:10px; bottom:10px; background:rgba(0,0,0,.4); padding:8px 10px; border-radius:10px; font-size:12px; color:#b9c6d6; }
     .panel { width:360px; min-width:320px; background:var(--panel); border-radius:14px; padding:14px; display:flex; flex-direction:column; gap:12px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 10px 30px rgba(0,0,0,.35); }
     .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
     .group { background:#0f151c; border:1px solid #253041; border-radius:12px; padding:10px; }
@@ -106,6 +106,7 @@
   const gl = canvas.getContext('webgl', { antialias:true, alpha:false, preserveDrawingBuffer:true });
   if(!gl){ alert('WebGL not supported'); return; }
 
+  const AXIS_MARGIN = 0.0; // 0.045 if you want it to avoid axis line altogether
   let gridCols = 24, gridRows = 24;
   const paletteColors = [
     [100.0/255.0, 143.0/255.0, 255.0/255.0, 1.0], // ibm-blue
@@ -287,6 +288,92 @@
     return {pos,col,triCount: totalTris};
   }
 
+  function signedDistToAxisAtPoint(x, y, theta){
+    // axis through origin, normal n = (-sinθ, cosθ)
+    const nx = -Math.sin(theta);
+    const ny =  Math.cos(theta);
+    return x*nx + y*ny;
+  }
+
+  function cellCenterSignedDist(i, j, theta){
+    const cx = (i - gridCols/2) + 0.5;
+    const cy = (j - gridRows/2) + 0.5;
+    const nx = -Math.sin(theta);
+    const ny =  Math.cos(theta);
+
+    return cx*nx + cy*ny;
+  }
+
+  function cellCrossesAxisInterior(i, j, theta, eps = 1e-9){
+    const x0 = i - gridCols/2, y0 = j - gridRows/2;
+    const x1 = x0 + 1,        y1 = y0 + 1;
+
+    const nx = -Math.sin(theta);
+    const ny =  Math.cos(theta);
+
+    const d0 = x0*nx + y0*ny;
+    const d1 = x1*nx + y0*ny;
+    const d2 = x1*nx + y1*ny;
+    const d3 = x0*nx + y1*ny;
+
+    const dmin = Math.min(d0,d1,d2,d3);
+    const dmax = Math.max(d0,d1,d2,d3);
+
+    // STRICT crossing only (touching allowed)
+    return (dmin < -eps) && (dmax > eps);
+  }
+
+  // One-sided rule: keep everything on one side, but allow touching/skirting.
+  // sideSign: +1 keeps d >= 0 side, -1 keeps d <= 0 side.
+  function cellAllowedOnSide(i, j, theta, sideSign, eps = 1e-9){
+    const x0 = i - gridCols/2, y0 = j - gridRows/2;
+    const x1 = x0 + 1,        y1 = y0 + 1;
+
+    const nx = -Math.sin(theta);
+    const ny =  Math.cos(theta);
+
+    const d0 = x0*nx + y0*ny;
+    const d1 = x1*nx + y0*ny;
+    const d2 = x1*nx + y1*ny;
+    const d3 = x0*nx + y1*ny;
+
+    const dmin = Math.min(d0,d1,d2,d3);
+    const dmax = Math.max(d0,d1,d2,d3);
+
+    if (sideSign > 0){
+      // all corners must be >= 0 (touch allowed)
+      return dmin >= -eps;
+    } else {
+      // all corners must be <= 0 (touch allowed)
+      return dmax <= eps;
+    }
+  }
+
+
+  function pickSeedCell(theta){
+    const minCenterDist = AXIS_MARGIN + 0.0; // you can keep 0.0
+
+    for(let tries = 0; tries < 4000; tries++){
+      const i = Math.floor(Math.random() * gridCols);
+      const j = Math.floor(Math.random() * gridRows);
+
+      // Reject seeds whose cell square is actually cut through by the axis interior
+      // (this avoids nasty diagonal half-cuts right at the seed)
+      if (cellCrossesAxisInterior(i, j, theta)) continue;
+
+      const cx = (i - gridCols/2) + 0.5;
+      const cy = (j - gridRows/2) + 0.5;
+
+      if (Math.abs(signedDistToAxisAtPoint(cx, cy, theta)) < minCenterDist) continue;
+
+      return { i, j };
+    }
+
+    // Fallback: anything in-bounds
+    return { i: Math.floor(gridCols/2), j: Math.floor(gridRows/2) };
+  }
+
+
   function rebuildPaintBatches(){
     const servedData = mapCellsToTris(served, showServed? 0.35 : 0.0);
     batch.servedPos = servedData.pos; batch.servedCol = servedData.col;
@@ -395,11 +482,12 @@
     return {x,y};
   }
   function worldToCellIndex(x, y){
-    // const i = Math.floor(x + gridCols/2);
-    // const j = Math.floor(y + gridRows/2);
-    const i = Math.floor(x);
-    const j = Math.floor(y);
-    if (i<-gridCols/2 || i>=gridCols/2 || j<-gridRows/2 || j>=gridRows/2) return null;
+    const i = Math.floor(x + gridCols/2);
+    const j = Math.floor(y + gridRows/2);
+    // const i = Math.floor(x);
+    // const j = Math.floor(y);
+    if (i<0 || i>=gridCols || j<0 || j>=gridRows) return null;
+    // if (i<-gridCols/2 || i>=gridCols/2 || j<-gridRows/2 || j>=gridRows/2) return null;
     return {i,j};
   }
 
@@ -726,26 +814,153 @@
     draw();
   }
 
+  let stall = 0;
+  const STALL_LIMIT = 3000;          // how many loop steps with no growth before we restart
+  const RESTART_LIMIT = 10;          // how many restarts before we give up and clamp n
+  let restarts = 0;
+
   function serveRandomChallenge(){
     served.clear(); painted.clear(); rebuildMarks([],[],1);
     axisAngle = (+axisInput.value) * Math.PI/180;
     rebuildAxisLine();
+
     const n = parseInt(shapeCellsInput.value,10);
     const maxC = parseInt(shapeColorsInput.value,10);
-    const startI = Math.floor(gridCols*0.25), startJ = Math.floor(gridRows*0.25);
-    const q = [[startI,startJ]]; const seen = new Set([`${startI},${startJ}`]);
+
+    let stall = 0;
+    const STALL_LIMIT = 3000;
+    let restarts = 0;
+    const RESTART_LIMIT = 8;
+
+    // We'll allow restarting with a different seed/side if we get boxed in.
+    function initFromNewSeed(){
+      served.clear();
+      painted.clear();
+      rebuildMarks([],[],1);
+
+      const seed = pickSeedCell(axisAngle);
+      const startI = seed.i, startJ = seed.j;
+
+      let sideSign = Math.sign(cellCenterSignedDist(startI, startJ, axisAngle));
+      if (sideSign === 0) sideSign = (Math.random() < 0.5 ? -1 : 1);
+
+      const q = [[startI, startJ]];
+      const seen = new Set([`${startI},${startJ}`]);
+      return { startI, startJ, sideSign, q, seen };
+    }
+
+    let { startI, startJ, sideSign, q, seen } = initFromNewSeed();
     const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
-    while(q.length && served.size < n){
-      const [ci,cj] = q.shift();
-      const colorIdx = Math.floor(Math.random()*maxC);
-      if(ci>=0 && ci<gridCols && cj>=0 && cj<gridRows){ served.set(`${ci},${cj}`, colorIdx); }
+
+    function enqueueNeighbors(ci, cj, prob){
       for(const [dx,dy] of dirs){
-        const ni=ci+dx, nj=cj+dy, key=`${ni},${nj}`;
-        if(!seen.has(key) && Math.random()<0.6){ seen.add(key); q.push([ni,nj]); }
+        const ni = ci + dx, nj = cj + dy;
+        if(ni < 0 || ni >= gridCols || nj < 0 || nj >= gridRows) continue;
+
+        const key = `${ni},${nj}`;
+        if(seen.has(key)) continue;
+
+        // 1) never allow interior-crossing cells (diagonal half-cuts)
+        if (cellCrossesAxisInterior(ni, nj, axisAngle)) continue;
+
+        // 2) one-sided rule (touching/skirting allowed)
+        if (!cellAllowedOnSide(ni, nj, axisAngle, sideSign)) continue;
+
+        if(Math.random() < prob){
+          seen.add(key);
+          q.push([ni, nj]);
+        }
       }
     }
+
+    function forceOneConnectedStep(){
+      if(served.size === 0) return false;
+
+      const shapeKeys = Array.from(served.keys());
+      for(let tries = 0; tries < 2000; tries++){
+        const [si, sj] = shapeKeys[Math.floor(Math.random() * shapeKeys.length)]
+          .split(',').map(Number);
+
+        const candidates = [];
+        for(const [dx,dy] of dirs){
+          const ni = si + dx, nj = sj + dy;
+          if(ni < 0 || ni >= gridCols || nj < 0 || nj >= gridRows) continue;
+
+          const nk = `${ni},${nj}`;
+          if(seen.has(nk)) continue;
+
+          if (cellCrossesAxisInterior(ni, nj, axisAngle)) continue;
+          if (!cellAllowedOnSide(ni, nj, axisAngle, sideSign)) continue;
+
+          candidates.push([ni, nj, nk]);
+        }
+
+        if(candidates.length){
+          const pick = candidates[Math.floor(Math.random() * candidates.length)];
+          seen.add(pick[2]);
+          q.push([pick[0], pick[1]]);
+          return true;
+        }
+      }
+      return false;
+    }
+
+    while(served.size < n){
+      if(stall > STALL_LIMIT){
+        restarts++;
+        if(restarts > RESTART_LIMIT) break;
+
+        ({ startI, startJ, sideSign, q, seen } = initFromNewSeed());
+        stall = 0;
+        continue;
+      }
+
+      if(q.length === 0){
+        const ok = forceOneConnectedStep();
+        stall += ok ? 0 : 50;
+        continue;
+      }
+
+      const before = served.size;
+      const [ci, cj] = q.shift();
+
+      // q only has in-bounds, but keep safe:
+      if(ci<0 || ci>=gridCols || cj<0 || cj>=gridRows){
+        stall++;
+        continue;
+      }
+
+      // Reject diagonal interior cuts
+      if (cellCrossesAxisInterior(ci, cj, axisAngle)){
+        stall++;
+        continue;
+      }
+
+      // One-sided rule (touching allowed)
+      if (!cellAllowedOnSide(ci, cj, axisAngle, sideSign)){
+        stall++;
+        continue;
+      }
+
+      const key = `${ci},${cj}`;
+      if(!served.has(key)){
+        const colorIdx = Math.floor(Math.random() * maxC);
+        served.set(key, colorIdx);
+      }
+
+      enqueueNeighbors(ci, cj, 0.6);
+
+      if(served.size === before) stall++;
+      else stall = 0;
+    }
+
+    if (served.size < n){
+      console.warn(`Clamped shapeCells from ${n} to ${served.size} due to axis/side constraints.`);
+    }
+
     resetStats();
-    rebuildPaintBatches(); draw();
+    rebuildPaintBatches();
+    draw();
   }
 
   document.getElementById('newChallenge').addEventListener('click', ()=>{
